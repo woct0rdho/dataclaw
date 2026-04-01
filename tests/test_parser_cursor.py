@@ -2,11 +2,7 @@
 
 from dataclaw import _json as json
 from dataclaw.parser import discover_projects, parse_project_sessions
-from tests.parser_helpers import (
-    disable_other_providers,
-    insert_cursor_conversation,
-    write_cursor_db,
-)
+from tests.parser_helpers import disable_other_providers, insert_cursor_conversation, write_cursor_db
 
 
 class TestCursorDiscoverProjects:

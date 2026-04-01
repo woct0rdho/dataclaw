@@ -2,12 +2,7 @@
 
 from dataclaw import _json as json
 from dataclaw.parser import discover_projects, parse_project_sessions
-from dataclaw.parsers.codex import (
-    build_tool_result_map as _build_codex_tool_result_map,
-)
-from dataclaw.parsers.codex import (
-    parse_session_file as _parse_codex_session_file,
-)
+from dataclaw.parsers.codex import build_tool_result_map, parse_session_file
 from tests.parser_helpers import disable_other_providers
 
 
@@ -189,7 +184,7 @@ class TestDiscoverCodexProjects:
 
         from dataclaw.anonymizer import Anonymizer
 
-        result = _parse_codex_session_file(
+        result = parse_session_file(
             session_file,
             Anonymizer(),
             include_thinking=True,
@@ -216,7 +211,7 @@ class TestBuildCodexToolResultMap:
                 },
             }
         ]
-        result = _build_codex_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "call-1" in result
         assert result["call-1"]["status"] == "success"
         assert result["call-1"]["output"]["exit_code"] == 0
@@ -224,15 +219,13 @@ class TestBuildCodexToolResultMap:
         assert "hello world" in result["call-1"]["output"]["output"]
 
     def test_custom_tool_call_output(self, mock_anonymizer):
-        from dataclaw import _json as _json
-
         entries = [
             {
                 "type": "response_item",
                 "payload": {
                     "type": "custom_tool_call_output",
                     "call_id": "call-2",
-                    "output": _json.dumps(
+                    "output": json.dumps(
                         {
                             "output": "Successfully applied patch",
                             "metadata": {"exit_code": 0, "duration_seconds": 0.5},
@@ -241,7 +234,7 @@ class TestBuildCodexToolResultMap:
                 },
             }
         ]
-        result = _build_codex_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "call-2" in result
         assert result["call-2"]["output"]["exit_code"] == 0
         assert "Successfully applied patch" in result["call-2"]["output"]["output"]
@@ -258,12 +251,10 @@ class TestBuildCodexToolResultMap:
                 },
             }
         ]
-        result = _build_codex_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "call-3" not in result
 
     def test_output_attached_end_to_end(self, tmp_path, monkeypatch, mock_anonymizer):
-        from dataclaw import _json as _json
-
         disable_other_providers(monkeypatch, tmp_path, keep={"codex"})
         codex_sessions = tmp_path / "codex-sessions" / "2026" / "02" / "24"
         codex_sessions.mkdir(parents=True)
@@ -286,7 +277,7 @@ class TestBuildCodexToolResultMap:
                     "type": "function_call",
                     "name": "shell_command",
                     "call_id": "call-x",
-                    "arguments": _json.dumps({"command": "ls", "workdir": "/home/user/repo"}),
+                    "arguments": json.dumps({"command": "ls", "workdir": "/home/user/repo"}),
                 },
             },
             {
@@ -304,12 +295,12 @@ class TestBuildCodexToolResultMap:
                 "payload": {"type": "agent_message", "message": "Done."},
             },
         ]
-        session_file.write_text("\n".join(_json.dumps(line) for line in lines) + "\n")
+        session_file.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
 
         monkeypatch.setattr("dataclaw.parsers.codex.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
         monkeypatch.setattr("dataclaw.parsers.codex.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
 
-        result = _parse_codex_session_file(
+        result = parse_session_file(
             session_file,
             mock_anonymizer,
             include_thinking=True,

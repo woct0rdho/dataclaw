@@ -2,7 +2,7 @@
 
 from dataclaw import _json as json
 from dataclaw.parser import discover_projects, parse_project_sessions
-from dataclaw.parsers.openclaw import parse_session_file as _parse_openclaw_session_file
+from dataclaw.parsers.openclaw import parse_session_file
 from tests.parser_helpers import (
     disable_other_providers,
     make_openclaw_assistant_message,
@@ -30,7 +30,7 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result is not None
         assert result["session_id"] == "oc-sess-1"
         assert len(result["messages"]) == 2
@@ -54,11 +54,11 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer, include_thinking=True)
+        result = parse_session_file(session_file, mock_anonymizer, include_thinking=True)
         assert "thinking" in result["messages"][1]
         assert "Let me think about X" in result["messages"][1]["thinking"]
 
-        result_no_think = _parse_openclaw_session_file(session_file, mock_anonymizer, include_thinking=False)
+        result_no_think = parse_session_file(session_file, mock_anonymizer, include_thinking=False)
         assert "thinking" not in result_no_think["messages"][1]
 
     def test_tool_calls_with_results(self, tmp_path, mock_anonymizer):
@@ -79,7 +79,7 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assistant_message = result["messages"][1]
         assert len(assistant_message["tool_uses"]) == 1
         tool_use = assistant_message["tool_uses"][0]
@@ -106,17 +106,17 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result["messages"][1]["tool_uses"][0]["status"] == "error"
 
     def test_empty_file_returns_none(self, tmp_path, mock_anonymizer):
         session_file = tmp_path / "empty.jsonl"
         session_file.write_text("")
-        assert _parse_openclaw_session_file(session_file, mock_anonymizer) is None
+        assert parse_session_file(session_file, mock_anonymizer) is None
 
     def test_no_session_header_returns_none(self, tmp_path, mock_anonymizer):
         session_file = _write_openclaw_session(tmp_path, "no-header.jsonl", [make_openclaw_user_message("Hello")])
-        assert _parse_openclaw_session_file(session_file, mock_anonymizer) is None
+        assert parse_session_file(session_file, mock_anonymizer) is None
 
     def test_model_change_entry(self, tmp_path, mock_anonymizer):
         session_file = _write_openclaw_session(
@@ -135,7 +135,7 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result["model"] == "anthropic/claude-opus-4-20250514"
 
     def test_cache_read_tokens(self, tmp_path, mock_anonymizer):
@@ -152,7 +152,7 @@ class TestParseOpenclawSessionFile:
             ],
         )
 
-        result = _parse_openclaw_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result["stats"]["input_tokens"] == 300
         assert result["stats"]["output_tokens"] == 50
 

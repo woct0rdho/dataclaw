@@ -3,86 +3,72 @@
 from dataclaw import _json as json
 from dataclaw.parser import discover_projects, parse_project_sessions
 from dataclaw.parsers.claude import (
-    build_project_name as _build_project_name,
-)
-from dataclaw.parsers.claude import (
-    build_tool_result_map as _build_tool_result_map,
-)
-from dataclaw.parsers.claude import (
-    extract_assistant_content as _extract_assistant_content,
-)
-from dataclaw.parsers.claude import (
-    extract_user_content as _extract_user_content,
-)
-from dataclaw.parsers.claude import (
-    find_subagent_only_sessions as _find_subagent_only_sessions,
-)
-from dataclaw.parsers.claude import (
-    parse_session_file as _parse_session_file,
-)
-from dataclaw.parsers.claude import (
-    parse_subagent_session as _parse_subagent_session,
-)
-from dataclaw.parsers.claude import (
-    process_entry as _process_entry,
+    build_project_name,
+    build_tool_result_map,
+    extract_assistant_content,
+    extract_user_content,
+    find_subagent_only_sessions,
+    parse_session_file,
+    parse_subagent_session,
+    process_entry,
 )
 from tests.parser_helpers import disable_other_providers, make_subagent_entry
 
 
 class TestBuildProjectName:
     def test_documents_prefix(self):
-        assert _build_project_name("-Users-alice-Documents-myproject") == "myproject"
+        assert build_project_name("-Users-alice-Documents-myproject") == "myproject"
 
     def test_home_prefix(self):
-        assert _build_project_name("-home-bob-project") == "project"
+        assert build_project_name("-home-bob-project") == "project"
 
     def test_standalone(self):
-        assert _build_project_name("standalone") == "standalone"
+        assert build_project_name("standalone") == "standalone"
 
     def test_deep_documents_path(self):
-        result = _build_project_name("-Users-alice-Documents-work-repo")
+        result = build_project_name("-Users-alice-Documents-work-repo")
         assert result == "work-repo"
 
     def test_downloads_prefix(self):
-        assert _build_project_name("-Users-alice-Downloads-thing") == "thing"
+        assert build_project_name("-Users-alice-Downloads-thing") == "thing"
 
     def test_desktop_prefix(self):
-        assert _build_project_name("-Users-alice-Desktop-stuff") == "stuff"
+        assert build_project_name("-Users-alice-Desktop-stuff") == "stuff"
 
     def test_bare_home(self):
-        assert _build_project_name("-Users-alice") == "~home"
+        assert build_project_name("-Users-alice") == "~home"
 
     def test_users_common_dir_only(self):
-        assert _build_project_name("-Users-alice-Documents") == "~Documents"
+        assert build_project_name("-Users-alice-Documents") == "~Documents"
 
     def test_home_bare(self):
-        assert _build_project_name("-home-bob") == "~home"
+        assert build_project_name("-home-bob") == "~home"
 
     def test_windows_paths(self):
-        assert _build_project_name("C-Users-bob-Documents-proj") == "proj"
-        assert _build_project_name("D-Users-alice-code-myapp") == "code-myapp"
-        assert _build_project_name("E-Users-charlie") == "~home"
+        assert build_project_name("C-Users-bob-Documents-proj") == "proj"
+        assert build_project_name("D-Users-alice-code-myapp") == "code-myapp"
+        assert build_project_name("E-Users-charlie") == "~home"
 
     def test_non_common_dir(self):
-        result = _build_project_name("-Users-alice-code-myproject")
+        result = build_project_name("-Users-alice-code-myproject")
         assert result == "code-myproject"
 
     def test_empty_string(self):
-        result = _build_project_name("")
+        result = build_project_name("")
         assert result == ""
 
     def test_linux_deep_path(self):
-        assert _build_project_name("-home-bob-projects-app") == "projects-app"
+        assert build_project_name("-home-bob-projects-app") == "projects-app"
 
     def test_hyphens_preserved_in_project_name(self):
-        result = _build_project_name("-Users-alice-Documents-my-cool-project")
+        result = build_project_name("-Users-alice-Documents-my-cool-project")
         assert result == "my-cool-project"
 
 
 class TestExtractUserContent:
     def test_string_content(self, mock_anonymizer):
         entry = {"message": {"content": "Fix the bug"}}
-        result = _extract_user_content(entry, mock_anonymizer)
+        result = extract_user_content(entry, mock_anonymizer)
         assert result == "Fix the bug"
 
     def test_list_content(self, mock_anonymizer):
@@ -94,21 +80,21 @@ class TestExtractUserContent:
                 ]
             }
         }
-        result = _extract_user_content(entry, mock_anonymizer)
+        result = extract_user_content(entry, mock_anonymizer)
         assert "Hello" in result
         assert "World" in result
 
     def test_empty_content(self, mock_anonymizer):
         entry = {"message": {"content": ""}}
-        assert _extract_user_content(entry, mock_anonymizer) is None
+        assert extract_user_content(entry, mock_anonymizer) is None
 
     def test_whitespace_content(self, mock_anonymizer):
         entry = {"message": {"content": "   \n  "}}
-        assert _extract_user_content(entry, mock_anonymizer) is None
+        assert extract_user_content(entry, mock_anonymizer) is None
 
     def test_missing_message(self, mock_anonymizer):
         entry = {}
-        assert _extract_user_content(entry, mock_anonymizer) is None
+        assert extract_user_content(entry, mock_anonymizer) is None
 
 
 class TestExtractAssistantContent:
@@ -121,7 +107,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(entry, mock_anonymizer, True)
+        result = extract_assistant_content(entry, mock_anonymizer, True)
         assert result is not None
         assert result["role"] == "assistant"
         assert "Part 1" in result["content"]
@@ -136,7 +122,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(entry, mock_anonymizer, True)
+        result = extract_assistant_content(entry, mock_anonymizer, True)
         assert result is not None
         assert "thinking" in result
         assert "Need to inspect files." in result["thinking"]
@@ -150,7 +136,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(entry, mock_anonymizer, False)
+        result = extract_assistant_content(entry, mock_anonymizer, False)
         assert result is not None
         assert "thinking" not in result
         assert result["content"] == "Visible."
@@ -168,7 +154,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(entry, mock_anonymizer, True)
+        result = extract_assistant_content(entry, mock_anonymizer, True)
         assert result is not None
         assert len(result["tool_uses"]) == 1
         assert result["tool_uses"][0]["tool"] == "Read"
@@ -186,7 +172,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(
+        result = extract_assistant_content(
             entry,
             mock_anonymizer,
             True,
@@ -199,11 +185,11 @@ class TestExtractAssistantContent:
 
     def test_empty_blocks_returns_none(self, mock_anonymizer):
         entry = {"message": {"content": []}}
-        assert _extract_assistant_content(entry, mock_anonymizer, True) is None
+        assert extract_assistant_content(entry, mock_anonymizer, True) is None
 
     def test_non_list_content_returns_none(self, mock_anonymizer):
         entry = {"message": {"content": "not-a-list"}}
-        assert _extract_assistant_content(entry, mock_anonymizer, True) is None
+        assert extract_assistant_content(entry, mock_anonymizer, True) is None
 
     def test_ignores_non_dict_blocks(self, mock_anonymizer):
         entry = {
@@ -214,7 +200,7 @@ class TestExtractAssistantContent:
                 ]
             }
         }
-        result = _extract_assistant_content(entry, mock_anonymizer, True)
+        result = extract_assistant_content(entry, mock_anonymizer, True)
         assert result is not None
         assert result["content"] == "Valid."
 
@@ -238,7 +224,7 @@ class TestProcessEntry:
             "input_tokens": 0,
             "output_tokens": 0,
         }
-        _process_entry(entry, messages, metadata, stats, anonymizer, include_thinking)
+        process_entry(entry, messages, metadata, stats, anonymizer, include_thinking)
         return messages, metadata, stats
 
     def test_user_entry(self, mock_anonymizer, sample_user_entry):
@@ -289,7 +275,7 @@ class TestParseSessionFile:
             },
         ]
         session_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
-        result = _parse_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result is not None
         assert len(result["messages"]) == 2
         assert result["model"] == "claude-sonnet-4-20250514"
@@ -301,25 +287,25 @@ class TestParseSessionFile:
             "not valid json\n"
             '{"type":"assistant","timestamp":1706000001000,"message":{"model":"m","content":[{"type":"text","text":"Hi"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n'
         )
-        result = _parse_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result is not None
         assert len(result["messages"]) == 2
 
     def test_empty_file(self, tmp_path, mock_anonymizer):
         session_file = tmp_path / "session.jsonl"
         session_file.write_text("")
-        assert _parse_session_file(session_file, mock_anonymizer) is None
+        assert parse_session_file(session_file, mock_anonymizer) is None
 
     def test_oserror_returns_none(self, tmp_path, mock_anonymizer):
         session_file = tmp_path / "nonexistent.jsonl"
-        assert _parse_session_file(session_file, mock_anonymizer) is None
+        assert parse_session_file(session_file, mock_anonymizer) is None
 
     def test_blank_lines_skipped(self, tmp_path, mock_anonymizer):
         session_file = tmp_path / "session.jsonl"
         session_file.write_text(
             '\n\n{"type":"user","timestamp":1706000000000,"message":{"content":"Hi"},"cwd":"/tmp"}\n\n'
         )
-        result = _parse_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result is not None
         assert len(result["messages"]) == 1
 
@@ -389,7 +375,7 @@ class TestFindSubagentOnlySessions:
         subagent_only_dir.mkdir(parents=True)
         (subagent_only_dir / "agent-b1.jsonl").write_text("{}\n")
 
-        result = _find_subagent_only_sessions(project_dir)
+        result = find_subagent_only_sessions(project_dir)
         assert len(result) == 1
         assert result[0].name == "subagent-only"
 
@@ -397,18 +383,18 @@ class TestFindSubagentOnlySessions:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         (project_dir / "tool-only" / "tool-results").mkdir(parents=True)
-        assert _find_subagent_only_sessions(project_dir) == []
+        assert find_subagent_only_sessions(project_dir) == []
 
     def test_ignores_empty_subagent_dirs(self, tmp_path):
         project_dir = tmp_path / "project"
         (project_dir / "empty-sa" / "subagents").mkdir(parents=True)
-        assert _find_subagent_only_sessions(project_dir) == []
+        assert find_subagent_only_sessions(project_dir) == []
 
     def test_returns_empty_for_no_dirs(self, tmp_path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         (project_dir / "session.jsonl").write_text("{}\n")
-        assert _find_subagent_only_sessions(project_dir) == []
+        assert find_subagent_only_sessions(project_dir) == []
 
 
 class TestParseSubagentSession:
@@ -434,7 +420,7 @@ class TestParseSubagentSession:
             json.dumps(make_subagent_entry("assistant", "Second reply", "2026-01-10T08:01:00Z")) + "\n"
         )
 
-        result = _parse_subagent_session(session_dir, mock_anonymizer)
+        result = parse_subagent_session(session_dir, mock_anonymizer)
         assert result is not None
         assert result["session_id"] == "abc-123"
         assert len(result["messages"]) == 3
@@ -447,12 +433,12 @@ class TestParseSubagentSession:
     def test_returns_none_for_empty_subagents(self, tmp_path, mock_anonymizer):
         session_dir = tmp_path / "empty"
         (session_dir / "subagents").mkdir(parents=True)
-        assert _parse_subagent_session(session_dir, mock_anonymizer) is None
+        assert parse_subagent_session(session_dir, mock_anonymizer) is None
 
     def test_returns_none_for_no_subagent_dir(self, tmp_path, mock_anonymizer):
         session_dir = tmp_path / "no-sa"
         session_dir.mkdir()
-        assert _parse_subagent_session(session_dir, mock_anonymizer) is None
+        assert parse_subagent_session(session_dir, mock_anonymizer) is None
 
     def test_returns_none_when_no_messages(self, tmp_path, mock_anonymizer):
         session_dir = tmp_path / "no-msgs"
@@ -461,7 +447,7 @@ class TestParseSubagentSession:
         (subagent_dir / "agent-x.jsonl").write_text(
             json.dumps({"type": "system", "timestamp": "2026-01-01T00:00:00Z"}) + "\n"
         )
-        assert _parse_subagent_session(session_dir, mock_anonymizer) is None
+        assert parse_subagent_session(session_dir, mock_anonymizer) is None
 
     def test_stats_aggregated(self, tmp_path, mock_anonymizer):
         session_dir = tmp_path / "stats-test"
@@ -476,7 +462,7 @@ class TestParseSubagentSession:
             + "\n"
         )
 
-        result = _parse_subagent_session(session_dir, mock_anonymizer)
+        result = parse_subagent_session(session_dir, mock_anonymizer)
         assert result is not None
         assert result["stats"]["user_messages"] == 1
         assert result["stats"]["assistant_messages"] == 2
@@ -568,7 +554,7 @@ class TestBuildToolResultMap:
                 },
             }
         ]
-        result = _build_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "tu-1" in result
         assert result["tu-1"]["status"] == "success"
         assert result["tu-1"]["output"]["text"] == "file contents here"
@@ -589,7 +575,7 @@ class TestBuildToolResultMap:
                 },
             }
         ]
-        result = _build_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert result["tu-2"]["status"] == "error"
 
     def test_list_content(self, mock_anonymizer):
@@ -610,7 +596,7 @@ class TestBuildToolResultMap:
                 },
             }
         ]
-        result = _build_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "Part one" in result["tu-3"]["output"]["text"]
         assert "Part two" in result["tu-3"]["output"]["text"]
 
@@ -621,7 +607,7 @@ class TestBuildToolResultMap:
                 "message": {"content": [{"type": "tool_result", "tool_use_id": "tu-4", "content": ""}]},
             }
         ]
-        result = _build_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert result["tu-4"]["output"] == {}
 
     def test_non_user_entries_ignored(self, mock_anonymizer):
@@ -631,7 +617,7 @@ class TestBuildToolResultMap:
                 "message": {"content": [{"type": "tool_result", "tool_use_id": "tu-5", "content": "ignored"}]},
             }
         ]
-        result = _build_tool_result_map(entries, mock_anonymizer)
+        result = build_tool_result_map(entries, mock_anonymizer)
         assert "tu-5" not in result
 
     def test_tool_output_attached_in_session(self, tmp_path, mock_anonymizer):
@@ -669,7 +655,7 @@ class TestBuildToolResultMap:
             },
         ]
         session_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
-        result = _parse_session_file(session_file, mock_anonymizer)
+        result = parse_session_file(session_file, mock_anonymizer)
         assert result is not None
         tool_use = result["messages"][0]["tool_uses"][0]
         assert tool_use["tool"] == "Bash"
