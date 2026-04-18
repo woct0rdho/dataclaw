@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,13 +20,15 @@ from typing import Any
 import orjson
 import yaml
 
-from .secrets import contains_large_binary_value, summarize_large_binary_value
+from ._workers import configured_workers
+from .secrets import contains_large_binary_value, should_skip_large_binary_string
 
 IDENTITY_FIELDS = ("source", "project", "session_id", "start_time")
 OMITTED_ORIGINAL_FILE = "<omitted originalFile content>"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 DEFAULT_YAML_SUFFIX = "_formatted.yaml"
 DEFAULT_DIFF_SUFFIX = "_diff.yaml"
+_LARGE_BLOB_MARKER_RE = re.compile(r"^__DATACLAW_LARGE_BLOB__:(\d+):[0-9a-f]{16}$")
 _YAML_WIDTH = 2147483647
 _BaseDumper = getattr(yaml, "CDumper", yaml.SafeDumper)
 
@@ -44,6 +48,62 @@ Dumper.add_representer(str, _str_representer)
 
 def encode_emojis(text: str) -> str:
     return "".join(f"__EMOJI_{ord(char):x}__" if ord(char) > 0xFFFF else char for char in text)
+
+
+def _large_blob_marker(text: str) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return f"__DATACLAW_LARGE_BLOB__:{len(text)}:{digest}"
+
+
+def _large_blob_summary_from_marker(text: str) -> dict[str, Any] | None:
+    match = _LARGE_BLOB_MARKER_RE.fullmatch(text)
+    if match is None:
+        return None
+    return {"type": "large_blob", "length": int(match.group(1))}
+
+
+def prepare_large_binary_diff_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _large_blob_marker(value) if should_skip_large_binary_string(value) else value
+    if isinstance(value, dict):
+        return {key: prepare_large_binary_diff_value(child_value) for key, child_value in value.items()}
+    if isinstance(value, list):
+        return [prepare_large_binary_diff_value(item) for item in value]
+    return value
+
+
+def contains_large_binary_marker(value: Any) -> bool:
+    if isinstance(value, str):
+        return _large_blob_summary_from_marker(value) is not None
+    if isinstance(value, dict):
+        return any(contains_large_binary_marker(child_value) for child_value in value.values())
+    if isinstance(value, list):
+        return any(contains_large_binary_marker(item) for item in value)
+    return False
+
+
+def summarize_large_binary_markers(value: Any) -> Any:
+    if isinstance(value, str):
+        summary = _large_blob_summary_from_marker(value)
+        return summary if summary is not None else value
+    if isinstance(value, dict):
+        return {key: summarize_large_binary_markers(child_value) for key, child_value in value.items()}
+    if isinstance(value, list):
+        return [summarize_large_binary_markers(item) for item in value]
+    return value
+
+
+def summarize_large_binary_patch_ops(patch_ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summarized = []
+    for op in patch_ops:
+        had_large_blob_marker = any(
+            contains_large_binary_marker(op.get(field)) for field in ("value", "old", "new") if field in op
+        )
+        summarized_op = summarize_large_binary_markers(op)
+        if summarized_op.get("op") == "replace" and had_large_blob_marker:
+            summarized_op["op"] = "replace_large_blob"
+        summarized.append(summarized_op)
+    return summarized
 
 
 class DecodeStream:
@@ -98,6 +158,19 @@ def default_diff_output_path(new_path: Path) -> Path:
 
 def _open_text_output(path: Path):
     return path.open("w", encoding="utf-8", newline="\n")
+
+
+def _resolve_diff_workers(task_count: int, workers: int | None = None) -> int:
+    if task_count < 2:
+        return 1
+
+    if workers is None:
+        workers = configured_workers()
+
+    if workers is None:
+        workers = os.cpu_count() or 1
+
+    return max(1, min(workers, task_count))
 
 
 def yaml_dump_documents(documents: Iterable[dict[str, Any]], output_path: Path) -> Path:
@@ -252,7 +325,7 @@ def join_json_pointer(path_prefix: str, child_path: str) -> str:
     return f"{path_prefix}/{child_path}"
 
 
-def match_key_for_array_item(value: Any) -> tuple[Any, ...] | None:
+def exact_match_key_for_array_item(value: Any) -> tuple[Any, ...] | None:
     if not isinstance(value, dict):
         return None
 
@@ -270,6 +343,65 @@ def match_key_for_array_item(value: Any) -> tuple[Any, ...] | None:
     return None
 
 
+def loose_match_key_for_array_item(value: Any) -> tuple[Any, ...] | None:
+    if not isinstance(value, dict):
+        return None
+
+    if "role" in value and "timestamp" in value:
+        tools = []
+        for tool_use in value.get("tool_uses", []):
+            if isinstance(tool_use, dict):
+                tools.append(tool_use.get("tool"))
+        return (
+            "message",
+            value.get("role"),
+            value.get("timestamp"),
+            tuple(tools),
+            "thinking" in value,
+            "content_parts" in value,
+        )
+
+    if "tool" in value and isinstance(value.get("input"), dict):
+        return ("tool_use", value.get("tool"), tuple(sorted(value.get("input", {}))))
+
+    return None
+
+
+def _pair_array_item_ops(
+    remove_ops: list[dict[str, Any]],
+    add_ops: list[dict[str, Any]],
+    key_fn,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]] | None:
+    add_buckets: dict[tuple[Any, ...], deque[dict[str, Any]]] = {}
+    add_keys: list[tuple[Any, ...]] = []
+    for op in add_ops:
+        key = key_fn(op.get("value"))
+        if key is None:
+            return None
+        add_buckets.setdefault(key, deque()).append(op)
+        add_keys.append(key)
+
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    paired_remove_ids: set[int] = set()
+    paired_add_ids: set[int] = set()
+
+    for op in remove_ops:
+        key = key_fn(op.get("value"))
+        if key is None:
+            return None
+        add_queue = add_buckets.get(key)
+        if not add_queue:
+            continue
+        add_op = add_queue.popleft()
+        pairs.append((op, add_op))
+        paired_remove_ids.add(id(op))
+        paired_add_ids.add(id(add_op))
+
+    remaining_removes = [op for op in remove_ops if id(op) not in paired_remove_ids]
+    remaining_adds = [op for op in add_ops if id(op) not in paired_add_ids]
+    return pairs, remaining_removes, remaining_adds
+
+
 def expand_array_item_run(ops: list[dict[str, Any]], path_prefix: str) -> list[dict[str, Any]] | None:
     if not ops:
         return []
@@ -282,31 +414,28 @@ def expand_array_item_run(ops: list[dict[str, Any]], path_prefix: str) -> list[d
     if not removes or not adds:
         return None
 
-    remove_buckets: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    add_buckets: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for op in removes:
-        key = match_key_for_array_item(op.get("value"))
-        if key is None:
-            return None
-        remove_buckets.setdefault(key, []).append(op)
-    for op in adds:
-        key = match_key_for_array_item(op.get("value"))
-        if key is None:
-            return None
-        add_buckets.setdefault(key, []).append(op)
-
-    if set(remove_buckets) != set(add_buckets):
+    exact_pairs_result = _pair_array_item_ops(removes, adds, exact_match_key_for_array_item)
+    if exact_pairs_result is None:
         return None
+
+    exact_pairs, remaining_removes, remaining_adds = exact_pairs_result
+    loose_pairs_result = _pair_array_item_ops(remaining_removes, remaining_adds, loose_match_key_for_array_item)
+    if loose_pairs_result is None:
+        return None
+
+    loose_pairs, final_removes, final_adds = loose_pairs_result
 
     expanded: list[dict[str, Any]] = []
     full_path = join_json_pointer(path_prefix, path)
-    for key in sorted(remove_buckets, key=str):
-        remove_items = remove_buckets[key]
-        add_items = add_buckets[key]
-        if len(remove_items) != len(add_items):
-            return None
-        for remove_op, add_op in zip(remove_items, add_items, strict=True):
-            expanded.extend(expand_replace_op(full_path, remove_op.get("value"), add_op.get("value")))
+
+    for remove_op, add_op in [*exact_pairs, *loose_pairs]:
+        expanded.extend(expand_replace_op(full_path, remove_op.get("value"), add_op.get("value")))
+
+    for remove_op in final_removes:
+        expanded.append({"op": "remove", "path": full_path, "value": remove_op.get("value")})
+    for add_op in final_adds:
+        expanded.append({"op": "add", "path": full_path, "value": add_op.get("value")})
+
     return expanded
 
 
@@ -344,7 +473,7 @@ def build_text_replace_diff(old: str, new: str) -> str | None:
     if old == new or ("\n" not in old and "\n" not in new):
         return None
     diff_lines = list(
-        difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile="old", tofile="new", lineterm="", n=2)
+        difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile="old", tofile="new", lineterm="", n=3)
     )
     if not diff_lines:
         return None
@@ -353,8 +482,35 @@ def build_text_replace_diff(old: str, new: str) -> str | None:
 
 def build_record_patch(old: Any, new: Any) -> list[dict[str, Any]]:
     if contains_large_binary_value(old) or contains_large_binary_value(new):
-        return expand_replace_op("", old, new)
+        return summarize_large_binary_patch_ops(
+            run_jd_patch(prepare_large_binary_diff_value(old), prepare_large_binary_diff_value(new))
+        )
     return run_jd_patch(old, new)
+
+
+def _build_record_patch_worker(payload: tuple[Any, Any]) -> list[dict[str, Any]]:
+    old, new = payload
+    return build_record_patch(old, new)
+
+
+def _resolve_modified_event_patches(
+    modified_events: list[tuple[dict[str, Any], Any, Any]],
+    workers: int | None = None,
+) -> None:
+    if not modified_events:
+        return
+
+    payloads = [(old_obj, new_obj) for _event, old_obj, new_obj in modified_events]
+    resolved_workers = _resolve_diff_workers(len(payloads), workers)
+
+    if resolved_workers <= 1:
+        patches = [_build_record_patch_worker(payload) for payload in payloads]
+    else:
+        with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+            patches = list(executor.map(_build_record_patch_worker, payloads))
+
+    for (event, _old_obj, _new_obj), patch in zip(modified_events, patches, strict=True):
+        event["patch"] = patch
 
 
 def expand_replace_op(path: str, old: Any, new: Any) -> list[dict[str, Any]]:
@@ -362,14 +518,9 @@ def expand_replace_op(path: str, old: Any, new: Any) -> list[dict[str, Any]]:
         return []
 
     if contains_large_binary_value(old) or contains_large_binary_value(new):
-        return [
-            {
-                "op": "replace_large_blob",
-                "path": path,
-                "old": summarize_large_binary_value(old),
-                "new": summarize_large_binary_value(new),
-            }
-        ]
+        return summarize_large_binary_patch_ops(
+            expand_replace_op(path, prepare_large_binary_diff_value(old), prepare_large_binary_diff_value(new))
+        )
 
     if isinstance(old, (dict, list)) and isinstance(new, type(old)):
         nested_patch = run_jd_patch(old, new)
@@ -438,8 +589,11 @@ def build_events(
     new_records: dict[tuple[Any, ...], dict[str, Any]],
     include_records_for_modified: bool,
     emit_event: Callable[[dict[str, Any]], None],
+    workers: int | None = None,
 ) -> tuple[int, dict[str, int]]:
     event_count = 0
+    events: list[dict[str, Any]] = []
+    modified_events: list[tuple[dict[str, Any], Any, Any]] = []
     summary = {
         "unchanged_records": 0,
         "modified_records": 0,
@@ -470,12 +624,13 @@ def build_events(
                 "identity": identity_dict(key),
                 "old_line": _pop_line_number(old_entry),
                 "new_line": _pop_line_number(new_entry),
-                "patch": build_record_patch(old_entry["obj"], new_entry["obj"]),
+                "patch": [],
             }
             if include_records_for_modified:
                 event["old_record"] = old_entry["obj"]
                 event["new_record"] = new_entry["obj"]
-            emit_event(event)
+            events.append(event)
+            modified_events.append((event, old_entry["obj"], new_entry["obj"]))
             event_count += 1
             summary["modified_records"] += 1
 
@@ -488,7 +643,7 @@ def build_events(
                 continue
             entry = old_records[key][digest]
             lines = _take_line_numbers(entry, count)
-            emit_event(
+            events.append(
                 {
                     "change_type": "removed",
                     "identity": identity_dict(key),
@@ -506,7 +661,7 @@ def build_events(
                 continue
             entry = new_records[key][digest]
             lines = _take_line_numbers(entry, count)
-            emit_event(
+            events.append(
                 {
                     "change_type": "added",
                     "identity": identity_dict(key),
@@ -518,6 +673,11 @@ def build_events(
             event_count += 1
             summary["added_records"] += count
 
+    _resolve_modified_event_patches(modified_events, workers)
+
+    for event in events:
+        emit_event(event)
+
     return event_count, summary
 
 
@@ -527,6 +687,7 @@ def diff_jsonl_files(
     output_path: Path | None = None,
     *,
     include_records_for_modified: bool = False,
+    workers: int | None = None,
 ) -> DiffResult:
     if output_path is None:
         output_path = default_diff_output_path(new_path)
@@ -550,6 +711,7 @@ def diff_jsonl_files(
                 new_records,
                 include_records_for_modified=include_records_for_modified,
                 emit_event=lambda event: _yaml_dump_document(event, events_handle, events_decoded_handle),
+                workers=workers,
             )
 
         summary = {
